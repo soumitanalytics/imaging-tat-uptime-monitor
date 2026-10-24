@@ -1,0 +1,9 @@
+EquipmentID,Modality,Room
+XR-01,X-Ray,Room 1
+XR-02,X-Ray,Room 2
+CT-01,CT,Room 3
+CT-02,CT,Room 4
+MR-01,MRI,Room 5
+MR-02,MRI,Room 6
+US-01,Ultrasound,Room 7
+US-02,Ultrasound,Room 8

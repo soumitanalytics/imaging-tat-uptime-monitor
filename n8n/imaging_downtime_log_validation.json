@@ -1,0 +1,250 @@
+{
+  "name": "Imaging Downtime Log Validation",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Imaging Downtime Log Upload",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "downtime_log_file",
+              "fieldType": "file",
+              "acceptFileTypes": ".csv"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        0
+      ],
+      "id": "87e6354a-00b9-4663-a038-99c1b234ad98",
+      "name": "On form submission",
+      "webhookId": "fb4af6e2-b91e-4209-b121-fab120caafd5"
+    },
+    {
+      "parameters": {
+        "binaryPropertyName": "downtime_log_file",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        0
+      ],
+      "id": "88d80370-9699-4d3b-b8fe-b5c2ff8c1cc3",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hardcoded for the prototype. In production, check against the equipment master table.\nconst VALID_EQUIPMENT = ['XR-01', 'XR-02', 'CT-01', 'CT-02', 'MR-01', 'MR-02', 'US-01', 'US-02'];\n\nfunction pad(n) { return String(n).padStart(2, '0'); }\n\n// Returns { ms, text } or null if the value is blank, in an unknown format, or not a real date/time.\nfunction parseTs(value) {\n  const s = (value === undefined || value === null) ? '' : String(value).trim();\n  let y, mo, d, h, mi, m;\n  if ((m = s.match(/^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2})$/))) {            // 2026-07-14 09:30\n    y = +m[1]; mo = +m[2]; d = +m[3]; h = +m[4]; mi = +m[5];\n  } else if ((m = s.match(/^(\\d{2})\\/(\\d{2})\\/(\\d{4}) (\\d{2}):(\\d{2})$/))) {   // 14/07/2026 09:30 (day first)\n    d = +m[1]; mo = +m[2]; y = +m[3]; h = +m[4]; mi = +m[5];\n  } else if ((m = s.match(/^(\\d{2})-(\\d{2})-(\\d{4}) (\\d{1,2}):(\\d{2}) (AM|PM)$/i))) { // 07-14-2026 09:30 AM (month first)\n    mo = +m[1]; d = +m[2]; y = +m[3]; mi = +m[5];\n    const h12 = +m[4];\n    if (h12 < 1 || h12 > 12) return null;\n    h = h12 % 12;\n    if (m[6].toUpperCase() === 'PM') h += 12;\n  } else {\n    return null;\n  }\n  const ms = Date.UTC(y, mo - 1, d, h, mi);\n  const t = new Date(ms);\n  if (t.getUTCFullYear() !== y || t.getUTCMonth() !== mo - 1 || t.getUTCDate() !== d ||\n      t.getUTCHours() !== h || t.getUTCMinutes() !== mi) return null;\n  return { ms, text: y + '-' + pad(mo) + '-' + pad(d) + ' ' + pad(h) + ':' + pad(mi) };\n}\n\n// PASS 1: row-by-row checks\nconst records = $input.all().map(item => {\n  const row = item.json;\n  const issues = [];\n\n  // RULE 1: unknown equipment\n  const eq = String(row.EquipmentID === undefined ? '' : row.EquipmentID).trim();\n  if (!VALID_EQUIPMENT.includes(eq)) issues.push('Unknown equipment: ' + (eq || '(blank)'));\n\n  // RULES 2 and 3: timestamps (n8n drops blank CSV cells, so EndTime may be undefined)\n  const start = parseTs(row.StartTime);\n  if (!start) issues.push('Unreadable start time: ' + String(row.StartTime));\n  const endRaw = (row.EndTime === undefined || row.EndTime === null) ? '' : String(row.EndTime).trim();\n  let end = null;\n  if (endRaw === '') {\n    issues.push('Missing end time');\n  } else {\n    end = parseTs(endRaw);\n    if (!end) issues.push('Unreadable end time: ' + endRaw);\n    else if (start && end.ms < start.ms) issues.push('End before start');\n  }\n  return { row, eq, start, end, issues };\n});\n\n// PASS 2: overlap check, only on rows that passed pass 1.\n// Per machine, sort by start time. An event that starts before the previous valid\n// event has ended is flagged (the later one).\nconst byEquipment = {};\nfor (const r of records) {\n  if (r.issues.length === 0) (byEquipment[r.eq] = byEquipment[r.eq] || []).push(r);\n}\nfor (const eq of Object.keys(byEquipment)) {\n  const list = byEquipment[eq].sort((a, b) => a.start.ms - b.start.ms);\n  let prevEnd = null;\n  for (const r of list) {\n    if (prevEnd !== null && r.start.ms < prevEnd) r.issues.push('Overlapping event on ' + eq);\n    else prevEnd = r.end.ms;\n  }\n}\n\nreturn records.map(r => {\n  const isValid = r.issues.length === 0;\n  return {\n    json: {\n      ...r.row,\n      StartTime_clean: r.start ? r.start.text : null,\n      EndTime_clean: r.end ? r.end.text : null,\n      Duration_hours: isValid ? Math.round(((r.end.ms - r.start.ms) / 3600000) * 100) / 100 : null,\n      issues: r.issues.join('; '),\n      issue_count: r.issues.length,\n      is_valid: isValid\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ],
+      "id": "6e26274a-16c2-4678-a0f1-b2d6b237ae19",
+      "name": "Validate Downtime"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "2797c785-219b-49dc-b6c3-bce1a54667fc",
+              "leftValue": "={{ $json.is_valid }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        0
+      ],
+      "id": "394860d7-3315-48c1-8b47-6c3f252f2c11",
+      "name": "Valid vs Flagged"
+    },
+    {
+      "parameters": {
+        "options": {
+          "fileName": "clean_downtime_log.csv"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        -96
+      ],
+      "id": "919926e4-36df-4a70-b52e-ff9ed0450ab4",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "2761791d-eff6-4e3e-a323-412a03006667",
+              "name": "DowntimeID",
+              "value": "={{ $json.DowntimeID }}",
+              "type": "string"
+            },
+            {
+              "id": "bb6613d5-eabf-44bd-a9c4-0439fb3b32c2",
+              "name": "EquipmentID",
+              "value": "={{ $json.EquipmentID }}",
+              "type": "string"
+            },
+            {
+              "id": "f930d3f1-ca60-4216-ab93-60644ea24675",
+              "name": "Reason",
+              "value": "={{ $json.Reason }}",
+              "type": "string"
+            },
+            {
+              "id": "d70d3480-7fbe-426c-ae7d-f0d86607892c",
+              "name": "StartTime",
+              "value": "={{ $json.StartTime_clean }}",
+              "type": "string"
+            },
+            {
+              "id": "fc18e61f-c5f0-4e0a-9e20-6620fcaedafa",
+              "name": "EndTime",
+              "value": "={{ $json.EndTime_clean }}",
+              "type": "string"
+            },
+            {
+              "id": "8c117126-03e8-4d36-b70f-549cc1c940b9",
+              "name": "Duration_hours",
+              "value": "={{ $json.Duration_hours }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        896,
+        -96
+      ],
+      "id": "6daf814a-743b-4f93-bd76-dc1d1655edf5",
+      "name": "Select Clean Column"
+    },
+    {
+      "parameters": {
+        "options": {
+          "fileName": "dq_flagged_downtime.csv"
+        }
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        896,
+        96
+      ],
+      "id": "955a32e4-92ba-4940-b5f0-5224429c97a9",
+      "name": "Convert to File1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Validate Downtime",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Downtime": {
+      "main": [
+        [
+          {
+            "node": "Valid vs Flagged",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid vs Flagged": {
+      "main": [
+        [
+          {
+            "node": "Select Clean Column",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Convert to File1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Select Clean Column": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "07f4229c-3148-4b1e-84e6-1af3b9aa349e",
+  "meta": {
+    "instanceId": "c7cd785518a0b8b7a1f098617335bb485730a5b00e81cbf03400a6a4a45a8cca"
+  },
+  "nodeGroups": [],
+  "id": "zcvJDOJOWxs3W75m",
+  "tags": []
+}
